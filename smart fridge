@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Fridge Tracker - ระบบจัดการของในตู้เย็น</title>
+    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.css' rel='stylesheet' />
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.js'></script>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --danger: #e74c3c;
+            --warning: #f39c12;
+            --success: #27ae60;
+            --cold: #3498db;
+            --freeze: #9b59b6;
+        }
+        body { font-family: 'Sarabun', sans-serif; background: #f4f7f6; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1000px; margin: auto; }
+        h1 { text-align: center; color: var(--primary); }
+        
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        
+        select, input, button { width: 100%; padding: 12px; margin-top: 5px; border-radius: 8px; border: 1px solid #ddd; box-sizing: border-box; }
+        button { background: var(--primary); color: white; border: none; cursor: pointer; font-weight: bold; }
+        button:hover { opacity: 0.9; }
+
+        .alert-box { background: #fff3cd; border-left: 5px solid #ffca28; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+        
+        .food-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }
+        .food-item { padding: 15px; border-radius: 8px; border-left: 8px solid #ccc; background: #fff; position: relative; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .status-expired { border-color: var(--danger); background: #fff5f5; }
+        .status-warning { border-color: var(--warning); background: #fffcf0; }
+        .status-ok { border-color: var(--success); }
+        
+        .delete-btn { position: absolute; right: 10px; top: 10px; color: #999; cursor: pointer; border: none; background: none; width: auto; }
+        
+        #calendar { margin-top: 20px; background: white; padding: 15px; border-radius: 12px; }
+        
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; color: white; margin-bottom: 5px; }
+        .badge-fridge { background: var(--cold); }
+        .badge-freezer { background: var(--freeze); }
+
+        @media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>❄️ Smart Fridge Tracker</h1>
+
+    <div id="update-reminder" class="alert-box" style="display:none;">
+        ⚠️ <b>แจ้งเตือน:</b> คุณไม่ได้อัปเดตรายการอาหารมาเกิน 2 วันแล้ว อย่าลืมตรวจสอบของในตู้เย็นนะครับ!
+    </div>
+
+    <div class="card">
+        <h3>➕ เพิ่มรายการอาหารใหม่</h3>
+        <div class="form-grid">
+            <div>
+                <label>ชื่ออาหาร/รายการ</label>
+                <input type="text" id="food-name" placeholder="เช่น หมูสับ, นมสด">
+            </div>
+            <div>
+                <label>ประเภทอาหาร</label>
+                <select id="food-type">
+                    <option value="meat">เนื้อสัตว์สด (หมู/ไก่/วัว)</option>
+                    <option value="processed-meat">เนื้อสัตว์แปรรูป (ไส้กรอก/ลูกชิ้น)</option>
+                    <option value="seafood">อาหารทะเล</option>
+                    <option value="dairy">ไข่และนม</option>
+                    <option value="veggie">ผักใบเขียว</option>
+                    <option value="fruit">ผลไม้</option>
+                    <option value="cooked">อาหารปรุงสุก</option>
+                </select>
+            </div>
+            <div>
+                <label>เลือกโหมดการเก็บ</label>
+                <select id="storage-mode">
+                    <option value="fridge">ช่องธรรมดา (2-5°C)</option>
+                    <option value="freezer">ช่องแช่แข็ง (-18°C)</option>
+                </select>
+            </div>
+            <div>
+                <label>วันที่นำเข้า</label>
+                <input type="date" id="entry-date">
+            </div>
+        </div>
+        <button onclick="addFood()" style="margin-top: 15px;">บันทึกลงตู้เย็น</button>
+    </div>
+
+    <div class="food-list" id="food-list-container"></div>
+
+    <div id='calendar'></div>
+</div>
+
+<script>
+    // ฐานข้อมูลระยะเวลาเก็บรักษา (หน่วย: วัน)
+    const storageDatabase = {
+        'meat': { fridge: 4, freezer: 240 },
+        'processed-meat': { fridge: 10, freezer: 45 },
+        'seafood': { fridge: 2, freezer: 120 },
+        'dairy': { fridge: 28, freezer: 0 }, // 0 คือไม่แนะนำ
+        'veggie': { fridge: 5, freezer: 0 },
+        'fruit': { fridge: 10, freezer: 300 },
+        'cooked': { fridge: 4, freezer: 75 }
+    };
+
+    let foods = JSON.parse(localStorage.getItem('myFridgeFoods')) || [];
+    let lastUpdate = localStorage.getItem('lastUpdate') || new Date().toISOString();
+
+    // เริ่มต้นระบบ
+    document.getElementById('entry-date').valueAsDate = new Date();
+    const calendarEl = document.getElementById('calendar');
+    const calendar = new FullCalendar.Calendar(calendarEl, {
+        initialView: 'dayGridMonth',
+        locale: 'th',
+        events: []
+    });
+    calendar.render();
+
+    function checkUpdateReminder() {
+        const lastDate = new Date(lastUpdate);
+        const diffDays = (new Date() - lastDate) / (1000 * 60 * 60 * 24);
+        if (diffDays >= 2) {
+            document.getElementById('update-reminder').style.display = 'block';
+        }
+    }
+
+    function addFood() {
+        const name = document.getElementById('food-name').value;
+        const type = document.getElementById('food-type').value;
+        const mode = document.getElementById('storage-mode').value;
+        const entryDate = new Date(document.getElementById('entry-date').value);
+
+        if (!name) return alert('กรุณาระบุชื่ออาหาร');
+
+        // คำนวณวันหมดอายุ
+        const duration = storageDatabase[type][mode];
+        if (duration === 0) {
+            alert('คำเตือน: ประเภทอาหารนี้ไม่แนะนำให้เก็บในโหมดที่เลือก แต่อะลุ่มอล่วยให้เก็บได้ 1 วัน');
+        }
+        
+        const expireDate = new Date(entryDate);
+        expireDate.setDate(entryDate.getDate() + (duration || 1));
+
+        const newFood = {
+            id: Date.now(),
+            name,
+            type,
+            mode,
+            entryDate: entryDate.toISOString().split('T')[0],
+            expireDate: expireDate.toISOString().split('T')[0]
+        };
+
+        foods.push(newFood);
+        lastUpdate = new Date().toISOString();
+        saveData();
+        render();
+        document.getElementById('food-name').value = '';
+    }
+
+    function deleteFood(id) {
+        foods = foods.filter(f => f.id !== id);
+        saveData();
+        render();
+    }
+
+    function saveData() {
+        localStorage.setItem('myFridgeFoods', JSON.stringify(foods));
+        localStorage.setItem('lastUpdate', lastUpdate);
+    }
+
+    function render() {
+        const container = document.getElementById('food-list-container');
+        container.innerHTML = '';
+        const calendarEvents = [];
+        const today = new Date().setHours(0,0,0,0);
+
+        foods.forEach(food => {
+            const expire = new Date(food.expireDate);
+            const timeDiff = expire.setHours(0,0,0,0) - today;
+            const daysLeft = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
+            
+            let statusClass = 'status-ok';
+            let statusText = `เหลืออีก ${daysLeft} วัน`;
+
+            if (daysLeft < 0) {
+                statusClass = 'status-expired';
+                statusText = 'หมดอายุแล้ว 🚩';
+            } else if (daysLeft <= 2) {
+                statusClass = 'status-warning';
+                statusText = 'ใกล้หมดอายุ ⚠️';
+            }
+
+            container.innerHTML += `
+                <div class="food-item ${statusClass}">
+                    <button class="delete-btn" onclick="deleteFood(${food.id})">✖</button>
+                    <span class="badge ${food.mode === 'fridge' ? 'badge-fridge' : 'badge-freezer'}">
+                        ${food.mode === 'fridge' ? 'ช่องธรรมดา' : 'ช่องแช่แข็ง'}
+                    </span>
+                    <div style="font-weight:bold; font-size: 1.2em;">${food.name}</div>
+                    <div style="font-size: 0.9em; color: #666;">นำเข้า: ${food.entryDate}</div>
+                    <div style="font-weight:bold; color: ${daysLeft < 0 ? 'red' : '#333'}">หมดอายุ: ${food.expireDate}</div>
+                    <div style="margin-top:5px; font-size: 0.85em;">${statusText}</div>
+                </div>
+            `;
+
+            calendarEvents.push({
+                title: (daysLeft < 0 ? '❌ ' : '⏳ ') + food.name,
+                start: food.expireDate,
+                backgroundColor: daysLeft < 0 ? '#e74c3c' : '#f39c12'
+            });
+        });
+
+        // อัปเดตปฏิทิน
+        calendar.removeAllEvents();
+        calendar.addEventSource(calendarEvents);
+        checkUpdateReminder();
+    }
+
+    render();
+</script>
+
+</body>
+</html>      
